@@ -90,6 +90,7 @@ public:
     value& operator[](size_t i);
     value& at(size_t i);
     // Judge value type
+    ValueType get_type() { return type; }
     bool is_string() { return type == String; }
     bool is_number() { return type == Number; }
     bool is_object() { return type == Object; }
@@ -225,13 +226,12 @@ value& value::at(size_t i)
 
 class parser {
 public:
-    // Return 0 if ok
-    int parse(value& value, const std::string& s)
+    bool parse(value& value, const std::string& s)
     {
         charstream.reset(new string_stream(this, s));
         return parse(value);
     }
-    int parsefile(value& value, const std::string& filename)
+    bool parsefile(value& value, const std::string& filename)
     {
         charstream.reset(new file_stream(this, filename));
         return parse(value);
@@ -262,15 +262,15 @@ private:
         parser *parser;
     };
 
-    int parse(value& value)
+    bool parse(value& value)
     {
         try {
             value = std::move(parse_value());
         } catch (parse_error& e) {
             errmsg = e.msg;
-            return -1;
+            return false;
         }
-        return 0;
+        return true;
     }
     value parse_value()
     {
@@ -405,6 +405,73 @@ private:
     int c; // cur valid character
     std::unique_ptr<char_stream> charstream;
     std::string errmsg;
+};
+
+//////////////////// Writer ////////////////////
+
+class writer {
+public:
+    void dump(value& value, std::string& s)
+    {
+        buf.clear();
+        dump_value(value);
+        buf.swap(s);
+    }
+private:
+    void dump_value(value& value)
+    {
+        auto type = value.get_type();
+        switch (type) {
+        case String: dump_string(value); break;
+        case Number: dump_number(value); break;
+        case Object: dump_object(value); break;
+        case Array: dump_array(value); break;
+        case Boolean: dump_boolean(value); break;
+        case Null: dump_null(value); break;
+        }
+    }
+    void dump_string(const string& s)
+    {
+        buf.append("\"").append(s).append("\"");
+    }
+    void dump_string(value& value)
+    {
+        dump_string(value.as_string());
+    }
+    void dump_number(value& value)
+    {
+        buf.append(std::to_string(value.as_number()));
+    }
+    void dump_object(value& value)
+    {
+        buf.push_back('{');
+        for (auto& [k, v] : value.as_object()) {
+            dump_string(k);
+            buf.append(":");
+            dump_value(*v);
+            buf.append(",");
+        }
+        buf.back() = '}';
+    }
+    void dump_array(value& value)
+    {
+        buf.push_back('[');
+        for (auto& e : value.as_array()) {
+            dump_value(*e);
+            buf.append(",");
+        }
+        buf.back() = ']';
+    }
+    void dump_boolean(value& value)
+    {
+        if (value.as_boolean()) buf.append("true");
+        else buf.append("false");
+    }
+    void dump_null(value& value)
+    {
+        buf.append("null");
+    }
+    std::string buf;
 };
 
 }
