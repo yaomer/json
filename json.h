@@ -51,10 +51,10 @@ public:
     value& operator=(string&& val);
     // For Number
     template <typename T,
-              typename = typename std::enable_if<std::is_integral<T>::value>>
+              typename = std::enable_if_t<std::is_integral_v<T>>>
     value(T val) : type(Number), uv(static_cast<number>(val)) {  }
     template <typename T,
-              typename = typename std::enable_if<std::is_integral<T>::value>>
+              typename = std::enable_if_t<std::is_integral_v<T>>>
     value& operator=(T val)
     {
         type = Number;
