@@ -294,7 +294,10 @@ private:
             auto key = parse_string();
             charstream->skipspace();
             if (c != ':') throw parse_error("expected pair<string : value>, missing the ':'");
-            o.emplace(std::move(key), new value(parse_value()));
+            value *value = new class value(parse_value());
+            auto it = o.emplace(key, value);
+            // For the same key, the old value will be overwritten
+            if (!it.second) o[key] = value_ptr(value);
             charstream->skipspace();
             if (c == '}') break;
             if (c != ',') throw parse_error("expected object<pair1, pair2, ...>, missing the ','");
@@ -312,7 +315,6 @@ private:
             charstream->skipspace();
             if (c == ']') break;
             if (c != ',') throw parse_error("expected array<value1, value2, ...>, missing the ','");
-            charstream->nextchar();
         }
         return a;
     }
@@ -342,7 +344,9 @@ private:
     number parse_number()
     {
         number n = 0;
-        if (!isnumber(c)) throw parse_error("unknown value type");
+        if (!isnumber(c)) {
+            throw parse_error("unknown value type");
+        }
         while (isnumber(c)) {
             n = n * 10 + (c - '0');
             charstream->nextchar();
@@ -411,13 +415,30 @@ private:
 
 class writer {
 public:
-    void dump(value& value, std::string& s)
+    // The default format is compact.
+    // Or you can visualize it in a 2, 4, or 8 space indentation format.
+    void dump(value& value, std::string& s, int spaces = 0)
     {
+        visual_init(spaces);
         buf.clear();
         dump_value(value);
         buf.swap(s);
     }
 private:
+    void visual_init(int spaces)
+    {
+        if (spaces > 8) {
+            spaces = 8; // 8-space indent is enough!
+        }
+        if (spaces > 0) {
+            visual = true;
+            indent_spaces = spaces;
+        } else {
+            visual = false;
+            indent_spaces = 0;
+        }
+        cur_level = 0;
+    }
     void dump_value(value& value)
     {
         auto type = value.get_type();
@@ -444,23 +465,35 @@ private:
     }
     void dump_object(value& value)
     {
+        int level = cur_level;
+        cur_level += indent_spaces;
         buf.push_back('{');
+        add_newline();
         for (auto& [k, v] : value.as_object()) {
+            add_spaces();
             dump_string(k);
             buf.append(":");
             dump_value(*v);
             buf.append(",");
+            add_newline();
         }
-        buf.back() = '}';
+        cur_level = level;
+        handle_right_indent('}');
     }
     void dump_array(value& value)
     {
+        int level = cur_level;
+        cur_level += indent_spaces;
         buf.push_back('[');
+        add_newline();
         for (auto& e : value.as_array()) {
+            add_spaces();
             dump_value(*e);
             buf.append(",");
+            add_newline();
         }
-        buf.back() = ']';
+        cur_level = level;
+        handle_right_indent(']');
     }
     void dump_boolean(value& value)
     {
@@ -471,7 +504,30 @@ private:
     {
         buf.append("null");
     }
+    void add_newline()
+    {
+        if (visual) buf.push_back('\n');
+    }
+    void add_spaces()
+    {
+        if (visual) buf.append(cur_level, ' ');
+    }
+    void handle_right_indent(int c)
+    {
+        if (visual) {
+            buf.pop_back();
+            buf.back() = '\n';
+            add_spaces();
+            buf.push_back(c);
+        } else {
+            buf.back() = c;
+        }
+    }
+
     std::string buf;
+    bool visual;
+    int indent_spaces; // A few spaces to indent
+    int cur_level; // Current indent level
 };
 
 }
