@@ -23,7 +23,7 @@ enum ValueType {
 // JSON String
 typedef std::string string;
 // JSON Number
-typedef int64_t number;
+typedef double number;
 // JSON Value
 struct value;
 typedef std::unique_ptr<value> value_ptr;
@@ -51,10 +51,10 @@ public:
     value& operator=(string&& val);
     // For Number
     template <typename T,
-              typename = std::enable_if_t<std::is_integral_v<T>>>
+              typename = std::enable_if_t<std::is_arithmetic_v<T>>>
     value(T val) : type(Number), uv(static_cast<number>(val)) {  }
     template <typename T,
-              typename = std::enable_if_t<std::is_integral_v<T>>>
+              typename = std::enable_if_t<std::is_arithmetic_v<T>>>
     value& operator=(T val)
     {
         type = Number;
@@ -224,6 +224,18 @@ value& value::at(size_t i)
 
 //////////////////// Parser ////////////////////
 
+enum error_code {
+    invalid_value_type,
+    invalid_object,
+    invalid_array,
+    invalid_escape_character,
+    invalid_number,
+    number_out_of_range,
+    invalid_constant,
+    incomplete,
+    extra,
+};
+
 class parser {
 public:
     bool parse(value& value, const std::string& s)
@@ -236,14 +248,9 @@ public:
         charstream.reset(new file_stream(this, filename));
         return parse(value);
     }
-    const char *error() { return errmsg.c_str(); }
+    error_code get_error_code() { return errcode; }
+    static const char *get_error_string(error_code code);
 private:
-    // Convenient to deal parse error
-    struct parse_error {
-        parse_error(const std::string& msg) : msg(msg) {  }
-        std::string msg;
-    };
-
     // Abstract the input to a stream of characters
     struct char_stream {
         char_stream(parser *psr) : parser(psr) {  }
@@ -252,6 +259,8 @@ private:
         virtual int nextchar() = 0;
         // Unextracts a character
         virtual void backward() = 0;
+        // At the end of the stream ?
+        virtual bool eof() = 0;
         // Reaches the next non-whitespace character
         int skipspace()
         {
@@ -262,25 +271,28 @@ private:
         parser *parser;
     };
 
+    // This is where we catch the exception,
+    // and provide the error code to user.
     bool parse(value& value)
     {
         try {
             value = std::move(parse_value());
-        } catch (parse_error& e) {
-            errmsg = e.msg;
+            while (!eof() && isspace(nextchar())) ;
+            if (!eof()) throw extra;
+        } catch (error_code code) {
+            errcode = code;
             return false;
         }
         return true;
     }
     value parse_value()
     {
-        charstream->skipspace();
+        skipspace();
         switch (c) {
         case '{': return parse_object();
         case '[': return parse_array();
-        case '\"': return parse_string();
-        case 't': case 'f': return parse_boolean();
-        case 'n': return parse_null();
+        case '"': return parse_string();
+        case 't': case 'f': case 'n': return parse_constant();
         default: return parse_number();
         }
     }
@@ -288,33 +300,33 @@ private:
     {
         object o;
         while (true) {
-            charstream->skipspace();
+            skipspace();
             if (c == '}') break;
-            if (c != '"') throw parse_error("expected string, missing the '\"'");
+            if (c != '"') throw invalid_object;
             auto key = parse_string();
-            charstream->skipspace();
-            if (c != ':') throw parse_error("expected pair<string : value>, missing the ':'");
+            skipspace();
+            if (c != ':') throw invalid_object;
             value *value = new class value(parse_value());
             auto it = o.emplace(key, value);
             // For the same key, the old value will be overwritten
             if (!it.second) o[key] = value_ptr(value);
-            charstream->skipspace();
+            skipspace();
             if (c == '}') break;
-            if (c != ',') throw parse_error("expected object<pair1, pair2, ...>, missing the ','");
+            if (c != ',') throw invalid_object;
         }
         return o;
     }
     array parse_array()
     {
         array a;
-        charstream->skipspace();
+        skipspace();
         if (c == ']') return a;
-        charstream->backward();
+        backward();
         while (true) {
             a.emplace_back(new value(parse_value()));
-            charstream->skipspace();
+            skipspace();
             if (c == ']') break;
-            if (c != ',') throw parse_error("expected array<value1, value2, ...>, missing the ','");
+            if (c != ',') throw invalid_array;
         }
         return a;
     }
@@ -323,16 +335,16 @@ private:
     {
         std::string s;
         while (true) {
-            charstream->nextchar();
+            nextchar();
             if (c == '\\') {
-                charstream->nextchar();
+                nextchar();
                 switch (c) {
                     case '\"': case '\\': case '/': case '\b':
                     case '\f': case '\n': case '\r': case '\t':
-                        charstream->nextchar();
+                        nextchar();
                         break;
                     default:
-                        throw parse_error("invalid escape character");
+                        throw invalid_escape_character;
                 }
             }
             if (c == '\"') break;
@@ -340,57 +352,88 @@ private:
         }
         return s;
     }
-    // TODO: Handles more complete integers and floating points.
+    void nextsave(std::string& s)
+    {
+        s.push_back(nextchar());
+    }
+    // We just do the number format check,
+    // then call stod() to convert.
     number parse_number()
     {
-        number n = 0;
-        if (!isnumber(c)) {
-            throw parse_error("unknown value type");
+        std::string s;
+        if (!isnumber(c) && c != '-') {
+            throw invalid_value_type;
         }
-        while (isnumber(c)) {
-            n = n * 10 + (c - '0');
-            charstream->nextchar();
+        s.push_back(c);
+        if (c == '-') nextsave(s);
+        if (c == '0' && !eof()) {
+            nextsave(s);
+            if (isnumber(c)) throw invalid_number;
+        } else if (isnumber(c)) {
+            while (!eof() && isnumber(c)) {
+                nextsave(s);
+            }
         }
-        charstream->backward();
-        return n;
+        if (c == '.') {
+            nextsave(s);
+            if (!isnumber(c)) throw invalid_number;
+            while (!eof() && isnumber(c)) {
+                nextsave(s);
+            }
+        }
+        if (c == 'e' || c == 'E') {
+            nextsave(s);
+            if (c == '+' || c == '-') nextsave(s);
+            if (!isnumber(c)) throw invalid_number;
+            while (!eof() && isnumber(c)) {
+                nextsave(s);
+            }
+        }
+        if (!isnumber(c)) backward();
+        try {
+            return std::stod(s);
+        } catch (std::out_of_range& e) {
+            throw number_out_of_range;
+        } catch (std::invalid_argument& e) {
+            throw invalid_number;
+        }
     }
-    bool parse_boolean()
+    value parse_constant()
     {
-        int c0 = c;
-        int c1 = charstream->nextchar();
-        int c2 = charstream->nextchar();
-        int c3 = charstream->nextchar();
-        if (c0 == 't' && c1 == 'r' && c2 == 'u' && c3 == 'e')
-            return true;
-        else
-            throw parse_error("expected 'true'");
-        int c4 = charstream->nextchar();
-        if (c0 == 'f' && c1 == 'a' && c2 == 'l' && c3 == 's' && c4 == 'e')
-            return false;
-        else
-            throw parse_error("expected 'false'");
+        const char *s, *p;
+        switch (c) {
+        case 't': s = "true"; break;
+        case 'f': s = "false"; break;
+        case 'n': s = "null"; break;
+        }
+        for (p = s + 1; *p != '\0'; p++) {
+            if (*p != nextchar()) {
+                throw invalid_constant;
+            }
+        }
+        switch (*s) {
+        case 't': return value(true);
+        case 'f': return value(false);
+        case 'n': return value();
+        default: assert(0);
+        }
     }
-    value parse_null()
-    {
-        int c0 = c;
-        int c1 = charstream->nextchar();
-        int c2 = charstream->nextchar();
-        int c3 = charstream->nextchar();
-        if (c0 == 'n' && c1 == 'u' && c2 == 'l' && c3 == 'l')
-            return value();
-        else
-            throw parse_error("expected 'null'");
-    }
+
+    int nextchar() { return charstream->nextchar(); }
+    int skipspace() { return charstream->skipspace(); }
+    void backward() { charstream->backward(); }
+    bool eof() { return charstream->eof(); }
 
     struct string_stream : char_stream {
         string_stream(class parser *psr, const std::string& s)
             : char_stream(psr), p(s.data()), end(s.data() + s.size()) {  }
         int nextchar() override
         {
-            if (p >= end) throw parse_error("incomplete json object");
+            if (p == end) throw incomplete;
             return parser->c = *p++;
         }
         void backward() override { p--; }
+        bool eof() override { return p == end; }
         const char *p, *end;
     };
 
@@ -399,17 +442,34 @@ private:
             : char_stream(psr), ifs(filename) {  }
         int nextchar() override
         {
-            if (ifs.eof()) throw parse_error("incomplete json object");
+            if (ifs.eof()) throw incomplete;
             return parser->c = ifs.get();
         }
         void backward() override { ifs.unget(); }
+        bool eof() override { return ifs.eof(); }
         std::ifstream ifs;
     };
 
     int c; // cur valid character
     std::unique_ptr<char_stream> charstream;
-    std::string errmsg;
+    error_code errcode;
 };
+
+const char *parser::get_error_string(error_code code)
+{
+    static constexpr const char *error_code_map[] = {
+        "invalid_value_type",
+        "invalid_object",
+        "invalid_array",
+        "invalid_escape_character",
+        "invalid_number",
+        "number_out_of_range",
+        "invalid_constant",
+        "incomplete",
+        "extra",
+    };
+    return error_code_map[code];
+}
 
 //////////////////// Writer ////////////////////
 
