@@ -240,6 +240,10 @@ enum error_code {
 
 class parser {
 public:
+    parser() = default;
+    ~parser() = default;
+    parser(const parser&) = delete;
+    parser& operator=(const parser&) = delete;
     bool parse(value& value, const std::string& s)
     {
         charstream.reset(new string_stream(this, s));
@@ -534,6 +538,10 @@ const char *parser::get_error_string(error_code code)
 
 class writer {
 public:
+    writer() = default;
+    ~writer() = default;
+    writer(const writer&) = delete;
+    writer& operator=(const writer&) = delete;
     // The default format is compact.
     // Or you can visualize it in a 2, 4, or 8 space indentation format.
     void dump(value& value, std::string& s, int spaces = 0)
