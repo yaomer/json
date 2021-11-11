@@ -118,7 +118,7 @@ value& value::operator=(value&& val)
 
 value& value::operator=(const char *val)
 {
-    return operator=(std::string(val));
+    return operator=(string(val));
 }
 
 value& value::operator=(const string& val)
@@ -228,7 +228,9 @@ enum error_code {
     invalid_value_type,
     invalid_object,
     invalid_array,
-    invalid_escape_character,
+    invalid_escape,
+    invalid_unicode,
+    invalid_unicode_surrogate,
     invalid_number,
     number_out_of_range,
     invalid_constant,
@@ -330,31 +332,41 @@ private:
         }
         return a;
     }
-    // TODO: Handles UTF-8
-    std::string parse_string()
+    void parse_escape(string& s)
     {
-        std::string s;
-        while (true) {
-            nextchar();
-            if (c == '\\') {
-                nextchar();
-                switch (c) {
-                    case '\"': case '\\': case '/': case '\b':
-                    case '\f': case '\n': case '\r': case '\t':
-                        nextchar();
-                        break;
-                    default:
-                        throw invalid_escape_character;
-                }
-            }
-            if (c == '\"') break;
-            s.push_back(c);
+        switch (nextchar()) {
+            case '"': s.push_back('\"'); break;
+            case '\\': s.push_back('\\'); break;
+            case '/': s.push_back('/'); break;
+            case 'b': s.push_back('\b'); break;
+            case 'f': s.push_back('\f'); break;
+            case 'n': s.push_back('\n'); break;
+            case 'r': s.push_back('\r'); break;
+            case 't': s.push_back('\t'); break;
+            case 'u': encode_unicode(s); break;
+            default: throw invalid_escape;
         }
-        return s;
+    }
+    string parse_string()
+    {
+        string s;
+        while (true) {
+            switch (nextchar()) {
+            case '\\': parse_escape(s); break;
+            case '\"': return s;
+            default: s.push_back(c); break;
+            }
+        }
     }
     void nextsave(std::string& s)
     {
         s.push_back(nextchar());
+    }
+    void skipnumber(std::string& s)
+    {
+        while (!eof() && isnumber(c)) {
+            nextsave(s);
+        }
     }
     // We just do the number format check,
     // then call stod() to convert.
@@ -370,24 +382,18 @@ private:
             nextsave(s);
             if (isnumber(c)) throw invalid_number;
         } else if (isnumber(c)) {
-            while (!eof() && isnumber(c)) {
-                nextsave(s);
-            }
+            skipnumber(s);
         }
         if (c == '.') {
             nextsave(s);
             if (!isnumber(c)) throw invalid_number;
-            while (!eof() && isnumber(c)) {
-                nextsave(s);
-            }
+            skipnumber(s);
         }
         if (c == 'e' || c == 'E') {
             nextsave(s);
             if (c == '+' || c == '-') nextsave(s);
             if (!isnumber(c)) throw invalid_number;
-            while (!eof() && isnumber(c)) {
-                nextsave(s);
-            }
+            skipnumber(s);
         }
         if (!isnumber(c)) backward();
         try {
@@ -416,6 +422,57 @@ private:
         case 'f': return value(false);
         case 'n': return value();
         default: assert(0);
+        }
+    }
+
+    unsigned fromhex()
+    {
+        nextchar();
+        if (isnumber(c)) return (c - '0');
+        else if (ishexnumber(c)) return (toupper(c) - 'A') + 10;
+        else throw invalid_unicode;
+    }
+    unsigned parse_hex4()
+    {
+        return (fromhex() << 12) | (fromhex() << 8) | (fromhex() << 4) | (fromhex());
+    }
+    // Only support UTF-8
+    // +----------------------------------------------------------------+
+    // |       range        |  byte-1  |  byte-2  |  byte-3  |  byte-4  |
+    // +----------------------------------------------------------------|
+    // |  U+0000 ~ U+007F   | 0xxxxxxx |          |          |          |
+    // |----------------------------------------------------------------|
+    // |  U+0080 ~ U+07FF   | 110xxxxx | 10xxxxxx |          |          |
+    // |----------------------------------------------------------------|
+    // |  U+0800 ~ U+FFFF   | 1110xxxx | 10xxxxxx | 10xxxxxx |          |
+    // |----------------------------------------------------------------|
+    // | U+10000 ~ U+10FFFF | 11110xxx | 10xxxxxx | 10xxxxxx | 10xxxxxx |
+    // +----------------------------------------------------------------+
+    void encode_unicode(std::string& s)
+    {
+        unsigned u = parse_hex4();
+        if (u >= 0xD800 && u <= 0xDBFF) { // SURROGATE-PAIR
+            if (nextchar() != '\\') throw invalid_unicode_surrogate;
+            if (nextchar() != 'u') throw invalid_unicode_surrogate;
+            unsigned u2 = parse_hex4();
+            if (u2 < 0xDC00 || u2 > 0xDFFF) throw invalid_unicode_surrogate;
+            u = (((u - 0xD800) << 10) | (u2 - 0xDC00)) + 0x10000;
+        }
+        if (u <= 0x7F) {
+            s.push_back(u & 0xFF);
+        } else if (u >= 0x80 && u <= 0x7FF) {
+            s.push_back(0xC0 | ((u >> 6) & 0xFF));
+            s.push_back(0x80 | ( u       & 0x3F));
+        } else if (u >= 0x800 && u <= 0xFFFF) {
+            s.push_back(0xE0 | ((u >> 12) & 0xFF));
+            s.push_back(0x80 | ((u >> 6)  & 0x3F));
+            s.push_back(0x80 | ( u        & 0x3F));
+        } else {
+            assert(u <= 0x10FFFF);
+            s.push_back(0xF0 | ((u >> 18) & 0xFF));
+            s.push_back(0x80 | ((u >> 12) & 0x3F));
+            s.push_back(0x80 | ((u >> 6)  & 0x3F));
+            s.push_back(0x80 | ( u        & 0x3F));
         }
     }
 
@@ -461,7 +518,9 @@ const char *parser::get_error_string(error_code code)
         "invalid_value_type",
         "invalid_object",
         "invalid_array",
-        "invalid_escape_character",
+        "invalid_escape",
+        "invalid_unicode",
+        "invalid_unicode_surrogate",
         "invalid_number",
         "number_out_of_range",
         "invalid_constant",
@@ -513,7 +572,9 @@ private:
     }
     void dump_string(const string& s)
     {
-        buf.append("\"").append(s).append("\"");
+        buf.push_back('\"');
+        decode_unicode(s);
+        buf.push_back('\"');
     }
     void dump_string(value& value)
     {
@@ -581,6 +642,58 @@ private:
             buf.push_back(c);
         } else {
             buf.back() = c;
+        }
+    }
+
+    void put_unicode(int c1, int c2, int c3, int c4)
+    {
+        static const char *tohex = "0123456789ABCDEF";
+        buf.push_back('\\');
+        buf.push_back('u');
+        buf.push_back(tohex[c1]);
+        buf.push_back(tohex[c2]);
+        buf.push_back(tohex[c3]);
+        buf.push_back(tohex[c4]);
+    }
+    void decode_unicode(const string& s)
+    {
+        for (size_t i = 0; i < s.size(); i++) {
+            char c = s[i];
+            if (!(c & 0x80)) {
+                // 1 bit is treated as an ASCII character,
+                // in which case UTF-8 is compatible with ASCII.
+                buf.push_back(c);
+            } else if (!(c & 0x20)) {
+                if (i + 1 >= s.size()) throw invalid_unicode;
+                char c2 = s[++i];
+                // xxx|xx xx|xxxx
+                put_unicode(0,
+                            (c & 0x1C) >> 2,
+                            ((c & 0x03) << 2) | ((c2 & 0x30) >> 4),
+                            (c2 & 0x0F));
+            } else if (!(c & 0x10)) {
+                if (i + 2 >= s.size()) throw invalid_unicode;
+                char c2 = s[++i], c3 = s[++i];
+                // xxxx |xxxx|xx xx|xxxx
+                put_unicode((c & 0x0F),
+                            (c2 & 0x3C) >> 2,
+                            ((c2 & 0x03) << 2) | ((c3 & 0x30) >> 4),
+                            (c3 & 0x0F));
+            } else { // SURROGATE-PAIR
+                assert(!(c & 0x08));
+                if (i + 3 >= s.size()) throw invalid_unicode;
+                char c2 = s[++i], c3 = s[++i], c4 = s[++i];
+                unsigned u = 0;
+                u = (u | (c  & 0x07)) << 6;
+                u = (u | (c2 & 0x3F)) << 6;
+                u = (u | (c3 & 0x3F)) << 6;
+                u = (u | (c4 & 0x3F));
+                u -= 0x10000;
+                unsigned u1 = (u >> 10) + 0xD800;
+                unsigned u2 = (u & 0x3FF) + 0xDC00;
+                put_unicode((u1 >> 12) & 0x0F, (u1 >> 8) & 0x0F, (u1 >> 4) & 0x0F, (u1 & 0x0F));
+                put_unicode((u2 >> 12) & 0x0F, (u2 >> 8) & 0x0F, (u2 >> 4) & 0x0F, (u2 & 0x0F));
+            }
         }
     }
 
