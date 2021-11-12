@@ -7,8 +7,6 @@
 #include <variant>
 #include <fstream>
 
-#include <iostream>
-
 namespace json {
 
 enum ValueType {
@@ -265,6 +263,8 @@ enum error_code {
     invalid_value_type,
     invalid_object,
     invalid_array,
+    invalid_string_tab,
+    invalid_string_break,
     invalid_escape,
     invalid_unicode,
     invalid_unicode_surrogate,
@@ -342,9 +342,11 @@ private:
     object parse_object()
     {
         object o;
+        skipspace();
+        if (c == '}') return o;
+        backward();
         while (true) {
             skipspace();
-            if (c == '}') break;
             if (c != '"') throw invalid_object;
             auto key = parse_string();
             skipspace();
@@ -395,6 +397,8 @@ private:
             switch (nextchar()) {
             case '\\': parse_escape(s); break;
             case '\"': return s;
+            case '\t': throw invalid_string_tab;
+            case '\n': throw invalid_string_break;
             default: s.push_back(c); break;
             }
         }
@@ -559,6 +563,8 @@ const char *parser::get_error_string(error_code code)
         "invalid_value_type",
         "invalid_object",
         "invalid_array",
+        "invalid_string_tab",
+        "invalid_string_break",
         "invalid_escape",
         "invalid_unicode",
         "invalid_unicode_surrogate",
@@ -708,7 +714,7 @@ private:
                 // 1 bit is treated as an ASCII character,
                 // in which case UTF-8 is compatible with ASCII.
                 buf.push_back(c);
-            } else if (!(c & 0x20)) {
+            } else if ((c & 0xE0) == 0xC0) { // 110xxxxx
                 if (i + 1 >= s.size()) throw invalid_unicode;
                 char c2 = s[++i];
                 // xxx|xx xx|xxxx
@@ -716,7 +722,7 @@ private:
                             (c & 0x1C) >> 2,
                             ((c & 0x03) << 2) | ((c2 & 0x30) >> 4),
                             (c2 & 0x0F));
-            } else if (!(c & 0x10)) {
+            } else if ((c & 0xF0) == 0xE0) { // 1110xxxx
                 if (i + 2 >= s.size()) throw invalid_unicode;
                 char c2 = s[++i], c3 = s[++i];
                 // xxxx |xxxx|xx xx|xxxx
@@ -725,7 +731,7 @@ private:
                             ((c2 & 0x03) << 2) | ((c3 & 0x30) >> 4),
                             (c3 & 0x0F));
             } else { // SURROGATE-PAIR
-                assert(!(c & 0x08));
+                assert((c & 0xF8) == 0xF0); // 11110xxx
                 if (i + 3 >= s.size()) throw invalid_unicode;
                 char c2 = s[++i], c3 = s[++i], c4 = s[++i];
                 unsigned u = 0;

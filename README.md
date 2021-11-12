@@ -2,6 +2,13 @@
 
 然后需要使用`c++17`来编译。
 
+```
+$ clang++ -std=c++17 json-check.cc
+```
+
+[json-checker](https://www.json.org/JSON_checker/)用于测试parse是否能正常工作。
+
+---
 假如我们有以下`json`文件，就叫做`m.json`吧。
 ```
 {
