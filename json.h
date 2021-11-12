@@ -14,7 +14,8 @@ enum ValueType {
     Number,
     Object,
     Array,
-    Boolean,
+    True,
+    False,
     Null,
 };
 
@@ -36,7 +37,7 @@ typedef std::unique_ptr<array> array_ptr;
 
 class value {
 public:
-    typedef std::variant<string, number, object_ptr, array_ptr, bool> union_value;
+    typedef std::variant<string, number, object_ptr, array_ptr> union_value;
     value() : type(Null) {  }
     value(const value&) = delete;
     value& operator=(const value&) = delete;
@@ -62,7 +63,7 @@ public:
         return *this;
     }
     // For Boolean
-    value(bool val) : type(Boolean), uv(val) {  }
+    value(bool val) : type(val ? True : False), uv{} {  }
     value& operator=(bool val);
     // For Null
     value(std::nullptr_t val) : type(Null), uv{} {  }
@@ -98,14 +99,14 @@ public:
     bool is_number() { return type == Number; }
     bool is_object() { return type == Object; }
     bool is_array() { return type == Array; }
-    bool is_boolean() { return type == Boolean; }
+    bool is_true() { return type == True; }
+    bool is_false() { return type == False; }
     bool is_null() { return type == Null; }
     // Take out value
     string& as_string() { return std::get<string>(uv); }
     number as_number() { return std::get<number>(uv); }
     object& as_object() { return *std::get<object_ptr>(uv); }
     array& as_array() { return *std::get<array_ptr>(uv); }
-    bool as_boolean() { return std::get<bool>(uv); }
     // Parser and writer wrapper
     //
     // If parse fails, the error str is saved in value,
@@ -155,8 +156,8 @@ value& value::operator=(string&& val)
 
 value& value::operator=(bool val)
 {
-    type = Boolean;
-    uv = val;
+    type = val ? True : False;
+    uv = {  };
     return *this;
 }
 
@@ -270,7 +271,9 @@ enum error_code {
     invalid_unicode_surrogate,
     invalid_number,
     number_out_of_range,
-    invalid_constant,
+    invalid_true,
+    invalid_false,
+    invalid_null,
     incomplete,
     extra,
 };
@@ -335,7 +338,9 @@ private:
         case '{': return parse_object();
         case '[': return parse_array();
         case '"': return parse_string();
-        case 't': case 'f': case 'n': return parse_constant();
+        case 't': return parse_constant("true");
+        case 'f': return parse_constant("false");
+        case 'n': return parse_constant("null");
         default: return parse_number();
         }
     }
@@ -449,20 +454,18 @@ private:
             throw invalid_number;
         }
     }
-    value parse_constant()
+    value parse_constant(const char *s)
     {
-        const char *s, *p;
-        switch (c) {
-        case 't': s = "true"; break;
-        case 'f': s = "false"; break;
-        case 'n': s = "null"; break;
-        }
-        for (p = s + 1; *p != '\0'; p++) {
+        for (const char *p = s + 1; *p != '\0'; p++) {
             if (*p != nextchar()) {
-                throw invalid_constant;
+                switch (s[0]) {
+                case 't': throw invalid_true;
+                case 'f': throw invalid_false;
+                case 'n': throw invalid_null;
+                }
             }
         }
-        switch (*s) {
+        switch (s[0]) {
         case 't': return value(true);
         case 'f': return value(false);
         case 'n': return value();
@@ -570,7 +573,9 @@ const char *parser::get_error_string(error_code code)
         "invalid_unicode_surrogate",
         "invalid_number",
         "number_out_of_range",
-        "invalid_constant",
+        "invalid_true",
+        "invalid_false",
+        "invalid_null",
         "incomplete",
         "extra",
     };
@@ -617,7 +622,8 @@ private:
         case Number: dump_number(value); break;
         case Object: dump_object(value); break;
         case Array: dump_array(value); break;
-        case Boolean: dump_boolean(value); break;
+        case True: dump_true(value); break;
+        case False: dump_false(value); break;
         case Null: dump_null(value); break;
         }
     }
@@ -667,10 +673,13 @@ private:
         cur_level = level;
         handle_right_indent(']');
     }
-    void dump_boolean(value& value)
+    void dump_true(value& value)
     {
-        if (value.as_boolean()) buf.append("true");
-        else buf.append("false");
+        buf.append("true");
+    }
+    void dump_false(value& value)
+    {
+        buf.append("false");
     }
     void dump_null(value& value)
     {
