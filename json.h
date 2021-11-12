@@ -40,7 +40,9 @@ class value {
 public:
     typedef std::variant<string, number, object_ptr, array_ptr, bool> union_value;
     value() : type(Null) {  }
-    value(value&& val) : type(val.type), uv(std::move(val.uv)) {  }
+    value(const value&) = delete;
+    value& operator=(const value&) = delete;
+    value(value&& val);
     value& operator=(value&& val);
     // For String
     value(const char *val) : type(String), uv(string(val)) {  }
@@ -64,6 +66,9 @@ public:
     // For Boolean
     value(bool val) : type(Boolean), uv(val) {  }
     value& operator=(bool val);
+    // For Null
+    value(std::nullptr_t val) : type(Null), uv{} {  }
+    value& operator=(std::nullptr_t val);
     // For Object
     value(object&& val) : type(Object), uv(object_ptr(new object(std::move(val)))) {  }
     value& operator=(object&& val);
@@ -103,16 +108,31 @@ public:
     object& as_object() { return *std::get<object_ptr>(uv); }
     array& as_array() { return *std::get<array_ptr>(uv); }
     bool as_boolean() { return std::get<bool>(uv); }
+    // Parser and writer wrapper
+    //
+    // If parse fails, the error str is saved in value,
+    // you can get it by as_string().
+    bool parse(const char *s);
+    bool parse(const std::string& s);
+    bool parse(const char *s, size_t len);
+    bool parsefile(const std::string& filename);
+    void dump(std::string& s, int spaces = 0);
 private:
     ValueType type;
     union_value uv;
     friend class parser;
 };
 
+value::value(value&& val) : type(val.type), uv(std::move(val.uv))
+{
+    val.type = Null;
+}
+
 value& value::operator=(value&& val)
 {
     type = val.type;
     uv = std::move(val.uv);
+    val.type = Null;
     return *this;
 }
 
@@ -139,6 +159,13 @@ value& value::operator=(bool val)
 {
     type = Boolean;
     uv = val;
+    return *this;
+}
+
+value& value::operator=(std::nullptr_t val)
+{
+    type = Null;
+    uv = {  };
     return *this;
 }
 
@@ -199,6 +226,16 @@ value& value::append(T&& val)
     return *this;
 }
 
+template <>
+value& value::append(value&& val)
+{
+    if (type != Array) {
+        *this = std::move(array());
+    }
+    as_array().emplace_back(new value(std::move(val)));
+    return *this;
+}
+
 template <typename T>
 value& value::append(std::initializer_list<T> l)
 {
@@ -244,9 +281,9 @@ public:
     ~parser() = default;
     parser(const parser&) = delete;
     parser& operator=(const parser&) = delete;
-    bool parse(value& value, const std::string& s)
+    bool parse(value& value, const char *s, size_t len)
     {
-        charstream.reset(new string_stream(this, s));
+        charstream.reset(new string_stream(this, s, len));
         return parse(value);
     }
     bool parsefile(value& value, const std::string& filename)
@@ -486,8 +523,8 @@ private:
     bool eof() { return charstream->eof(); }
 
     struct string_stream : char_stream {
-        string_stream(class parser *psr, const std::string& s)
-            : char_stream(psr), p(s.data()), end(s.data() + s.size()) {  }
+        string_stream(class parser *psr, const char *s, size_t len)
+            : char_stream(psr), p(s), end(s + len) {  }
         int nextchar() override
         {
             if (p == end) throw incomplete;
@@ -710,6 +747,38 @@ private:
     int indent_spaces; // A few spaces to indent
     int cur_level; // Current indent level
 };
+
+bool value::parse(const char *s)
+{
+    return parse(s, ::strlen(s));
+}
+
+bool value::parse(const std::string& s)
+{
+    return parse(s.data(), s.size());
+}
+
+bool value::parse(const char *s, size_t len)
+{
+    parser parser;
+    if (parser.parse(*this, s, len)) return true;
+    *this = parser.get_error_string(parser.get_error_code());
+    return false;
+}
+
+bool value::parsefile(const std::string& filename)
+{
+    parser parser;
+    if (parser.parsefile(*this, filename)) return true;
+    *this = parser.get_error_string(parser.get_error_code());
+    return false;
+}
+
+void value::dump(std::string& s, int spaces)
+{
+    writer writer;
+    writer.dump(*this, s, spaces);
+}
 
 }
 
