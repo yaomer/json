@@ -82,12 +82,15 @@ int main()
     cout << s.c_str() << "\n";
 }
 ```
-对于`数组`，你也可以使用`append`，但不能像`对象`那样`at(i) = val`。
+对于`数组`，你也可以使用`append`，但不能像`对象`那样通过`at(i) = val`来添加一个新的`val`。
 ```cpp
 int main()
 {
     json::value jv;
     jv.append("A").append("B").append("C"); // true
-    jv.at(0) = "A"; // false
+    jv.at(0) = "hello"; // modify, ok
+
+    json::value jv1
+    jv1.at(0) = "A"; // false
 }
 ```
