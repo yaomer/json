@@ -19,23 +19,22 @@ enum ValueType {
     Null,
 };
 
-// JSON String
-typedef std::string string;
-// JSON Number
-typedef double number;
-// JSON Value
-struct value;
-typedef std::unique_ptr<value> value_ptr;
-// JSON Object
-typedef std::unordered_map<string, value_ptr> object;
-typedef std::unique_ptr<object> object_ptr;
-// JSON Array
-typedef std::vector<value_ptr> array;
-typedef std::unique_ptr<array> array_ptr;
-
 //////////////////// JSON value ////////////////////
 
 class value {
+private:
+    // JSON String
+    typedef std::string string;
+    // JSON Number
+    typedef double number;
+    // JSON Value
+    typedef std::unique_ptr<value> value_ptr;
+    // JSON Object
+    typedef std::unordered_map<string, value_ptr> object;
+    typedef std::unique_ptr<object> object_ptr;
+    // JSON Array
+    typedef std::vector<value_ptr> array;
+    typedef std::unique_ptr<array> array_ptr;
 public:
     typedef std::variant<string, number, object_ptr, array_ptr> union_value;
     value() : type(Null) {  }
@@ -68,12 +67,6 @@ public:
     // For Null
     value(std::nullptr_t val) : type(Null), uv{} {  }
     value& operator=(std::nullptr_t val);
-    // For Object
-    value(object&& val) : type(Object), uv(object_ptr(new object(std::move(val)))) {  }
-    value& operator=(object&& val);
-    // For Array
-    value(array&& val) : type(Array), uv(array_ptr(new array(std::move(val)))) {  }
-    value& operator=(array&& val);
     // Init an Array by list
     template <typename T>
     value(std::initializer_list<T> l);
@@ -93,6 +86,8 @@ public:
     // the subscript access does not exceed the bounds.
     value& operator[](size_t i);
     value& at(size_t i);
+    // Swap value
+    void swap(value& other);
     // Judge value type
     ValueType get_type() { return type; }
     bool is_string() { return type == String; }
@@ -117,9 +112,17 @@ public:
     bool parsefile(const std::string& filename);
     void dump(std::string& s, int spaces = 0);
 private:
+    // For Object
+    value(object&& val) : type(Object), uv(object_ptr(new object(std::move(val)))) {  }
+    value& operator=(object&& val);
+    // For Array
+    value(array&& val) : type(Array), uv(array_ptr(new array(std::move(val)))) {  }
+    value& operator=(array&& val);
+
     ValueType type;
     union_value uv;
     friend class parser;
+    friend class writer;
 };
 
 value::value(value&& val) : type(val.type), uv(std::move(val.uv))
@@ -129,9 +132,7 @@ value::value(value&& val) : type(val.type), uv(std::move(val.uv))
 
 value& value::operator=(value&& val)
 {
-    type = val.type;
-    uv = std::move(val.uv);
-    val.type = Null;
+    swap(val);
     return *this;
 }
 
@@ -143,14 +144,14 @@ value& value::operator=(const char *val)
 value& value::operator=(const string& val)
 {
     type = String;
-    uv = val;
+    uv.emplace<string>(val);
     return *this;
 }
 
 value& value::operator=(string&& val)
 {
     type = String;
-    uv = std::move(val);
+    uv.emplace<string>(std::move(val));
     return *this;
 }
 
@@ -192,7 +193,7 @@ value::value(std::initializer_list<T> l) : type(Array), uv(array_ptr(new array()
 template <typename T>
 value& value::operator=(std::initializer_list<T> l)
 {
-    *this = std::move(array());
+    *this = array();
     for (auto& e : l)
         as_array().emplace_back(new value(e));
     return *this;
@@ -201,7 +202,7 @@ value& value::operator=(std::initializer_list<T> l)
 value& value::operator[](const string& key)
 {
     if (type != Object) {
-        *this = std::move(object());
+        *this = object();
     }
     auto& o = as_object();
     if (!o.count(key)) {
@@ -219,17 +220,7 @@ template <typename T>
 value& value::append(T&& val)
 {
     if (type != Array) {
-        *this = std::move(array());
-    }
-    as_array().emplace_back(new value(val));
-    return *this;
-}
-
-template <>
-value& value::append(value&& val)
-{
-    if (type != Array) {
-        *this = std::move(array());
+        *this = array();
     }
     as_array().emplace_back(new value(std::move(val)));
     return *this;
@@ -239,12 +230,9 @@ template <typename T>
 value& value::append(std::initializer_list<T> l)
 {
     if (type != Array) {
-        *this = std::move(array());
+        *this = array();
     }
-    array a;
-    for (auto& e : l)
-        a.emplace_back(new value(e));
-    as_array().emplace_back(new value(std::move(a)));
+    as_array().emplace_back(new value(l));
     return *this;
 }
 
@@ -256,6 +244,13 @@ value& value::operator[](size_t i)
 value& value::at(size_t i)
 {
     return *as_array().at(i);
+}
+
+void value::swap(value& other)
+{
+    std::swap(type, other.type);
+    uv.swap(other.uv);
+    other.type = Null;
 }
 
 //////////////////// Parser ////////////////////
@@ -279,6 +274,14 @@ enum error_code {
 };
 
 class parser {
+private:
+    typedef value::string string;
+    typedef value::number number;
+    typedef value::object object;
+    typedef value::object_ptr object_ptr;
+    typedef value::array array;
+    typedef value::array_ptr array_ptr;
+    typedef value::value_ptr value_ptr;
 public:
     parser() = default;
     ~parser() = default;
@@ -585,6 +588,8 @@ const char *parser::get_error_string(error_code code)
 //////////////////// Writer ////////////////////
 
 class writer {
+private:
+    typedef value::string string;
 public:
     writer() = default;
     ~writer() = default;
