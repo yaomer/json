@@ -90,7 +90,7 @@ int main()
     jv.append("A").append("B").append("C"); // true
     jv.at(0) = "hello"; // modify, ok
 
-    json::value jv1
+    json::value jv1;
     jv1.at(0) = "A"; // false
 }
 ```

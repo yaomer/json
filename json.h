@@ -35,8 +35,9 @@ private:
     // JSON Array
     typedef std::vector<value_ptr> array;
     typedef std::unique_ptr<array> array_ptr;
-public:
+    // Saved Value
     typedef std::variant<string, number, object_ptr, array_ptr> union_value;
+public:
     value() : type(Null) {  }
     value(const value&) = delete;
     value& operator=(const value&) = delete;
